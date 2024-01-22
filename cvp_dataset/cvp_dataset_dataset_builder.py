@@ -10,11 +10,14 @@ from PIL import Image
 camview_to_id = {
     '24259877_right': 0,
     '20521388_left': 1,
+    '13062452_left': 2,
 }
 
 SIZE=(256, 256)
 def resize_image(image):
     img = Image.fromarray(image).resize(SIZE, Image.Resampling.LANCZOS)
+    print(np.array(img).shape)
+
     return np.array(img)
 class CVPDataset(tfds.core.GeneratorBasedBuilder):
     """DatasetBuilder for example dataset."""
@@ -41,6 +44,12 @@ class CVPDataset(tfds.core.GeneratorBasedBuilder):
                             doc='Main camera RGB observation.',
                         ),
                         'image_1': tfds.features.Image(
+                            shape=(256, 256, 3),
+                            dtype=np.uint8,
+                            encoding_format='jpeg',
+                            doc='Main camera RGB observation.',
+                        ),
+                        'image_2': tfds.features.Image(
                             shape=(256, 256, 3),
                             dtype=np.uint8,
                             encoding_format='jpeg',
@@ -106,10 +115,10 @@ class CVPDataset(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         """Define data splits."""
-        base_path = '/home/rail-franka/Desktop/cvp/data/'
+        base_path = '/hdd/data/data/success_np/'
         return {
-            'train': self._generate_examples(path=base_path + 'npy/train/*.npy'),
-            'val': self._generate_examples(path=base_path + 'npy/test/*.npy'),
+            'train': self._generate_examples(path=base_path + '*/train/*.npy'),
+            'val': self._generate_examples(path=base_path + '*/test/*.npy'),
         }
 
     def _generate_examples(self, path) -> Iterator[Tuple[str, Any]]:
@@ -125,38 +134,40 @@ class CVPDataset(tfds.core.GeneratorBasedBuilder):
                 # assemble episode --> here we're assuming demos so we set reward to 1 at the end
                 # example is a list of dicts, each dict is one step
                 episode = []
-                if 'language' in example[0]:
-                    instruction = example[0]['language']  # get the first instruction
+                if 'language' in example:
+                    instruction = example['language'][0]  # get the first instruction
                     language_embedding = _embed([instruction])[0].numpy()
                 else:
                     instruction = ''
                     language_embedding = np.zeros(512, dtype=np.float32)
 
-                for i in range(example.shape[0]):
+                for i in range(len(example['observation']['proprio'])):
                     observation = {
-                        'state': example[i]['observation']['proprio'].astype(np.float32),
+                        'state': example['observation']['proprio'][i].astype(np.float32),
                         # 'subtask_id': example[i]['observation']['subtask_id'].astype(np.int32),
                     }
                     # gather all the proprioceptive states
                     # for robot_state in ['joint_position', 'joint_velocity']:
                     #     observation[robot_state] = example[i]['action'][robot_state].astype(np.float32)
 
-                    for cam_name in example[i]['observation']['image']:
-                        id = camview_to_id[cam_name]
-                        observation[f'image_{id}'] = resize_image(example[i]['observation']['image'][cam_name].astype(np.uint8))
+                    for key in example['observation'].keys():
+                        if key.startswith('image'):
+                            cam_name = key.split('/')[1]
+                            id = camview_to_id[cam_name]
+                            observation[f'image_{id}'] = resize_image(example['observation']['image/'+cam_name][i].astype(np.uint8))
 
                     action = np.concatenate(
-                        (example[i]['action']['cartesian_position'], example[i]['action']['gripper_position'][None]),
+                        (example['action']['cartesian_position'][i], example['action']['gripper_position'][i][None]),
                         axis=0)
 
                     episode.append({
                         'observation': observation,
                         'action': action.astype(np.float32),
                         'discount': 1.0,
-                        'reward': float(i == (example.shape[0] - 1)),
+                        'reward': float(i == (len(example['observation']['proprio']) - 1)),
                         'is_first': i == 0,
-                        'is_last': i == (example.shape[0] - 1),
-                        'is_terminal': i == (example.shape[0] - 1),
+                        'is_last': i == (len(example['observation']['proprio']) - 1),
+                        'is_terminal': i == (len(example['observation']['proprio']) - 1),
                         'language_instruction': instruction,
                         'language_embedding': language_embedding,
                     })
@@ -178,6 +189,7 @@ class CVPDataset(tfds.core.GeneratorBasedBuilder):
 
         # create list of all examples
         episode_paths = glob.glob(path)
+        print(episode_paths)
 
         # for smallish datasets, use single-thread parsing
         for sample in episode_paths:
